@@ -5,6 +5,7 @@
  */
 
 import type { SubagentConfig } from './types.js';
+import { ProjectManagementAgent } from './project-management-agent.js';
 
 /**
  * Registry of built-in subagents that are always available to all users.
@@ -42,6 +43,7 @@ Notes:
 - In your final response always share relevant file names and code snippets. Any file paths you return in your response MUST be absolute. Do NOT use relative paths.
 - For clear communication with the user the assistant MUST avoid using emojis.`,
     },
+    ProjectManagementAgent,
   ];
 
   /**

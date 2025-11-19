@@ -58,35 +58,90 @@ import {
 } from './utils/relaunch.js';
 import { validateNonInteractiveAuth } from './validateNonInterActiveAuth.js';
 
+// Cache the DNS resolution order to avoid repeated validation for the same value
+const dnsCache = new Map<string | undefined, DnsResolutionOrder>();
+const DNS_CACHE_MAX_SIZE = 10; // Limit cache size to prevent memory bloat
+
 export function validateDnsResolutionOrder(
   order: string | undefined,
 ): DnsResolutionOrder {
+  // Check if result is already cached
+  if (dnsCache.has(order)) {
+    return dnsCache.get(order)!;
+  }
+
   const defaultValue: DnsResolutionOrder = 'ipv4first';
+  let result: DnsResolutionOrder;
+
   if (order === undefined) {
-    return defaultValue;
+    result = defaultValue;
+  } else if (order === 'ipv4first' || order === 'verbatim') {
+    result = order;
+  } else {
+    // We don't want to throw here, just warn and use the default.
+    console.warn(
+      `Invalid value for dnsResolutionOrder in settings: "${order}". Using default "${defaultValue}".`,
+    );
+    result = defaultValue;
   }
-  if (order === 'ipv4first' || order === 'verbatim') {
-    return order;
+
+  // Add result to cache
+  dnsCache.set(order, result);
+
+  // Maintain cache size limit
+  if (dnsCache.size > DNS_CACHE_MAX_SIZE) {
+    // Remove first item (oldest) when exceeding max size
+    const firstKey = dnsCache.keys().next().value;
+    dnsCache.delete(firstKey);
   }
-  // We don't want to throw here, just warn and use the default.
-  console.warn(
-    `Invalid value for dnsResolutionOrder in settings: "${order}". Using default "${defaultValue}".`,
-  );
-  return defaultValue;
+
+  return result;
+}
+
+// Cache memory values to avoid recalculating on each call
+let cachedMemoryValues: {
+  totalMemoryMB: number;
+  currentMaxOldSpaceSizeMb: number;
+} | null = null;
+let cacheTimestamp: number | null = null;
+const CACHE_DURATION = 30000; // 30 seconds
+
+function getMemoryValues(): {
+  totalMemoryMB: number;
+  currentMaxOldSpaceSizeMb: number;
+} {
+  const now = Date.now();
+  // Refresh cache if it's older than CACHE_DURATION
+  if (
+    !cachedMemoryValues ||
+    (cacheTimestamp && now - cacheTimestamp > CACHE_DURATION)
+  ) {
+    const totalMemoryMB = os.totalmem() / (1024 * 1024);
+    const heapStats = v8.getHeapStatistics();
+    const currentMaxOldSpaceSizeMb = Math.floor(
+      heapStats.heap_size_limit / 1024 / 1024,
+    );
+    cachedMemoryValues = { totalMemoryMB, currentMaxOldSpaceSizeMb };
+    cacheTimestamp = now;
+  }
+  return cachedMemoryValues;
 }
 
 function getNodeMemoryArgs(isDebugMode: boolean): string[] {
-  const totalMemoryMB = os.totalmem() / (1024 * 1024);
-  const heapStats = v8.getHeapStatistics();
-  const currentMaxOldSpaceSizeMb = Math.floor(
-    heapStats.heap_size_limit / 1024 / 1024,
+  const { totalMemoryMB, currentMaxOldSpaceSizeMb } = getMemoryValues();
+
+  // Set target to 50% of total memory, with reasonable bounds
+  const targetMaxOldSpaceSizeInMB = Math.max(
+    512, // Minimum 512MB
+    Math.min(
+      Math.floor(totalMemoryMB * 0.5), // 50% of total memory
+      8192, // Maximum 8GB to avoid excessive memory allocation
+    ),
   );
 
-  // Set target to 50% of total memory
-  const targetMaxOldSpaceSizeInMB = Math.floor(totalMemoryMB * 0.5);
   if (isDebugMode) {
     console.debug(
-      `Current heap size ${currentMaxOldSpaceSizeMb.toFixed(2)} MB`,
+      `Current heap size ${currentMaxOldSpaceSizeMb.toFixed(2)} MB, target ${targetMaxOldSpaceSizeInMB} MB`,
     );
   }
 
@@ -97,7 +152,7 @@ function getNodeMemoryArgs(isDebugMode: boolean): string[] {
   if (targetMaxOldSpaceSizeInMB > currentMaxOldSpaceSizeMb) {
     if (isDebugMode) {
       console.debug(
-        `Need to relaunch with more memory: ${targetMaxOldSpaceSizeInMB.toFixed(2)} MB`,
+        `Need to relaunch with more memory: ${targetMaxOldSpaceSizeInMB} MB`,
       );
     }
     return [`--max-old-space-size=${targetMaxOldSpaceSizeInMB}`];
